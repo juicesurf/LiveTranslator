@@ -1,0 +1,276 @@
+import AppKit
+import UniformTypeIdentifiers
+@preconcurrency import ApplicationServices
+import Observation
+@preconcurrency import Translation
+
+struct CaptionDisplayRow: Identifiable, Equatable {
+    let id: Int
+    let english: String
+    let chinese: String?
+    let complete: Bool
+    let timestamp: Date
+    let elapsed: TimeInterval
+    var translationFailed = false
+    var status: CaptionStatus {
+        if !complete { return .incomplete }
+        if chinese != nil { return .translated }
+        return translationFailed ? .failed : .pending
+    }
+}
+
+@MainActor @Observable
+final class CaptionViewModel {
+    var english = ""
+    var chinese = ""
+    var connectionStatus = "尚未開始"
+    var translationStatus = "尚未準備語言模型"
+    var diagnostics = ""
+    var running = false
+    var configuration: TranslationSession.Configuration?
+    private let reader = AccessibilityCaptionReader()
+    private var polling: Task<Void, Never>?
+    private(set) var revision = 0
+    private var processor = CaptionProcessor()
+    private var units: [CaptionUnit] = []
+    private var clearedSources: [Int: String] = [:]
+    private var translations: [Int: (source: String, result: String)] = [:]
+    private var failed: [Int: String] = [:]
+    var exportStatus = ""
+    var isExporting = false
+    var timingStatus = "尚無翻譯耗時"
+    private var pendingSince: Date?
+    private var generation = 0
+    private var firstSeen: [Int: Date] = [:]
+    private(set) var sessionStartedAt: Date?
+    private var savedRows: [CaptionDisplayRow] = []
+    private var preferredExportFormat = TranscriptFormat.txt
+    private(set) var isProtectingTranscript = false
+
+    var hasUnsavedChanges: Bool { !captionRows.isEmpty && captionRows != savedRows }
+
+    func markExported(_ rows: [CaptionDisplayRow]) { savedRows = rows }
+
+    func protectTranscript(_ protect: Bool) { isProtectingTranscript = protect }
+
+    var captionRows: [CaptionDisplayRow] {
+        units.map { unit in
+            let translation = translations[unit.id]
+            return CaptionDisplayRow(id: unit.id, english: unit.text,
+                chinese: unit.complete && translation?.source == unit.text ? translation?.result : nil,
+                complete: unit.complete,
+                timestamp: firstSeen[unit.id] ?? sessionStartedAt ?? .distantPast,
+                elapsed: max(0, (firstSeen[unit.id] ?? sessionStartedAt ?? .distantPast).timeIntervalSince(sessionStartedAt ?? .distantPast)),
+                translationFailed: failed[unit.id] == unit.text)
+        }
+    }
+
+    func saveTranscript(format: TranscriptFormat = .txt, completion: ((Bool) -> Void)? = nil) {
+        guard !captionRows.isEmpty, !isExporting else { completion?(false); return }
+        let rows = captionRows
+        let now = Date()
+        let text = TranscriptService.document(rows: rows, exportedAt: now, format: format)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [format == .txt ? .plainText : (UTType(filenameExtension: "md") ?? .plainText)]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "LiveTranslator-\(now.formatted(.iso8601.year().month().day().dateSeparator(.dash))).\(format.fileExtension)"
+        panel.title = "儲存中英逐字稿（\(format.title)）"
+        panel.message = "儲存按下按鈕時的全部字幕，依時間、英文、中文逐句排列。"
+        preferredExportFormat = format
+        isExporting = true
+        panel.begin { [weak self] response in
+            guard let self else { completion?(false); return }
+            isExporting = false
+            guard response == .OK, let url = panel.url else { completion?(false); return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                markExported(rows)
+                exportStatus = "已儲存：\(url.lastPathComponent)"
+                completion?(true)
+            } catch {
+                exportStatus = "儲存失敗：\(error.localizedDescription)"
+                completion?(false)
+            }
+        }
+    }
+
+    /// Freeze mutations for the decision/save flow so a destructive action cannot lose
+    /// subtitles that arrived after the exported snapshot. Cancellation resumes capture.
+    func resolveUnsavedChanges(action: String, completion: @escaping (Bool) -> Void) {
+        guard !isExporting, !isProtectingTranscript else { completion(false); return }
+        guard hasUnsavedChanges else { completion(true); return }
+        protectTranscript(true)
+        let alert = NSAlert()
+        alert.messageText = "\(action)前要儲存字幕嗎？"
+        alert.informativeText = "本次有尚未匯出的新增或修正字幕。選擇期間會暫停更新；取消後恢復。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "儲存並\(action)")
+        alert.addButton(withTitle: "不儲存，直接\(action)")
+        alert.addButton(withTitle: "取消")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            saveTranscript(format: preferredExportFormat) { [weak self] saved in
+                guard let self else { completion(false); return }
+                let mayProceed = saved && !self.hasUnsavedChanges
+                completion(mayProceed)
+                self.protectTranscript(false)
+            }
+        } else {
+            completion(response == .alertSecondButtonReturn)
+            protectTranscript(false)
+        }
+    }
+
+    func requestClearCaptions() {
+        resolveUnsavedChanges(action: "清除") { [weak self] proceed in
+            if proceed { self?.clearCaptions() }
+        }
+    }
+
+    func clearCaptions() {
+        generation += 1
+        revision += 1
+        // Keep rolling-snapshot alignment so unchanged old captions do not reappear.
+        for unit in units { clearedSources[unit.id] = unit.text }
+        units = []
+        firstSeen.removeAll()
+        sessionStartedAt = nil
+        savedRows = []
+        translations.removeAll()
+        failed.removeAll()
+        english = ""
+        chinese = ""
+        pendingSince = nil
+        exportStatus = ""
+        timingStatus = "尚無翻譯耗時"
+        translationStatus = configuration == nil ? "尚未準備語言模型" : "等待完整句子（. ? !）"
+    }
+
+    func requestPermission() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    func openAccessibilitySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    func start() {
+        if sessionStartedAt == nil { sessionStartedAt = Date() }
+        stop()
+        running = true
+        polling = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let result = await reader.read()
+                guard !Task.isCancelled else { return }
+                connectionStatus = result.status
+                diagnostics = result.diagnostics
+                if !isProtectingTranscript && !result.text.isEmpty && result.text != english {
+                    setEnglish(result.text)
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    func stop() {
+        polling?.cancel()
+        polling = nil
+        running = false
+        generation += 1
+        revision += 1
+        connectionStatus = "已停止"
+    }
+
+    func setEnglish(_ text: String, at now: Date = Date()) {
+        guard !isProtectingTranscript, text != english else { return }
+        if sessionStartedAt == nil { sessionStartedAt = now }
+        english = text
+        units = processor.consume(text).filter { clearedSources[$0.id] != $0.text }
+        for unit in units where firstSeen[unit.id] == nil { firstSeen[unit.id] = now }
+        // Keep the last translation visible while the next snapshot is pending.
+        revision += 1
+        refreshChinese()
+        if nextTranslationUnit != nil {
+            if pendingSince == nil { pendingSince = now }
+        } else {
+            pendingSince = nil
+            if units.last?.complete == false { translationStatus = "等待完整句子（. ? !）" }
+        }
+    }
+
+    var nextTranslationUnit: CaptionUnit? {
+        units.first { $0.complete && translations[$0.id]?.source != $0.text && failed[$0.id] != $0.text }
+    }
+
+    func shouldTranslate(at now: Date) -> Bool {
+        !isProtectingTranscript && nextTranslationUnit != nil
+    }
+
+    /// Exact source matching prevents a corrected/deleted sentence accepting an old result.
+    @discardableResult
+    func acceptTranslation(_ result: String, for unit: CaptionUnit) -> Bool {
+        guard !isProtectingTranscript, units.contains(where: { $0.id == unit.id && $0.complete && $0.text == unit.text }) else { return false }
+        translations[unit.id] = (unit.text, result)
+        refreshChinese()
+        return true
+    }
+
+    private func refreshChinese() {
+        chinese = units.compactMap { unit in
+            guard unit.complete, let translation = translations[unit.id], translation.source == unit.text else { return nil }
+            return translation.result
+        }.joined(separator: "\n")
+    }
+
+    func prepareTranslation() {
+        generation += 1
+        failed.removeAll()
+        if configuration == nil {
+            if #available(macOS 26.4, *) {
+                configuration = .init(source: AppleTranslationService.source, target: AppleTranslationService.target, preferredStrategy: .lowLatency)
+            } else {
+                configuration = .init(source: AppleTranslationService.source, target: AppleTranslationService.target)
+            }
+        } else { configuration?.invalidate() }
+    }
+
+    func runTranslation(session: TranslationSession) async {
+        let service = AppleTranslationService(session: session)
+        translationStatus = "檢查語言支援／準備模型…"
+        do {
+            try await service.prepare()
+            translationStatus = "模型已準備，等待字幕"
+            pendingSince = Date()
+            while !Task.isCancelled {
+                if shouldTranslate(at: Date()),
+                   let unit = nextTranslationUnit {
+                    let capturedGeneration = generation
+                    let submittedAt = Date()
+                    let wait = submittedAt.timeIntervalSince(pendingSince ?? submittedAt)
+                    translationStatus = "翻譯中（\(unit.text.count) 字元）…"
+                    do {
+                        let result = try await service.translate(unit.text)
+                        try Task.checkCancellation()
+                        if generation == capturedGeneration, acceptTranslation(result, for: unit) {
+                            translationStatus = units.last?.complete == false ? "等待完整句子（. ? !）" : "翻譯完成"
+                        }
+                        timingStatus = String(format: "上次排程等待 %.2f 秒 · 模型翻譯 %.2f 秒 · %d 字元", wait, Date().timeIntervalSince(submittedAt), unit.text.count)
+                    } catch {
+                        if Task.isCancelled { return }
+                        if generation == capturedGeneration && !isProtectingTranscript {
+                            failed[unit.id] = unit.text
+                            translationStatus = "翻譯失敗：\(error.localizedDescription)；請按準備／重試"
+                        }
+                    }
+                    // A single consumer coalesces updates: no FIFO of obsolete snapshots.
+                    pendingSince = nextTranslationUnit != nil ? (pendingSince ?? Date()) : nil
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        } catch {
+            if !Task.isCancelled { translationStatus = "模型準備失敗：\(error.localizedDescription)；請重試" }
+        }
+    }
+}

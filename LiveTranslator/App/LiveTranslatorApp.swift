@@ -9,6 +9,9 @@ struct LiveTranslatorApp: App {
         Settings { SettingsView(settings: delegate.settings) }
             .commands {
                 CommandGroup(replacing: .newItem) {
+                    Button(delegate.settings.isNotes ? "切換至雙語字幕" : "切換至雙語筆記") {
+                        delegate.settings.mode = delegate.settings.isNotes ? .subtitles : .notes
+                    }.keyboardShortcut("n", modifiers: [.command, .shift])
                     Button("顯示字幕視窗") { delegate.showPanel() }
                         .keyboardShortcut("0", modifiers: .command)
                 }

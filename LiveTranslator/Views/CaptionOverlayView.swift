@@ -7,9 +7,14 @@ struct CaptionOverlayView: View {
     var applyWindowSettings: () -> Void
     @State private var showsSettings = false
     @State private var showsDiagnostics = false
+    @State private var hoveringHeader = false
+
+    private var visibleRows: [CaptionDisplayRow] {
+        settings.isNotes ? model.captionRows.filter { $0.complete && $0.chinese != nil } : model.captionRows
+    }
 
     private var colorScheme: ColorScheme? {
-        switch settings.appearance {
+        switch settings.activeAppearance {
         case .system: nil
         case .dark: .dark
         case .light: .light
@@ -18,26 +23,35 @@ struct CaptionOverlayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
+            ZStack(alignment: .leading) {
+                if settings.isNotes && !hoveringHeader && !showsSettings {
+                    Text("筆記").font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
+                }
+            HStack(spacing: 8) {
+                Button(settings.isNotes ? "字幕" : "筆記", systemImage: settings.isNotes ? "captions.bubble" : "note.text") {
+                    settings.mode = settings.isNotes ? .subtitles : .notes
+                }.help("切換雙語字幕／雙語筆記（⌘⇧N）")
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button(model.running ? "停止" : "開始擷取", systemImage: model.running ? "pause.fill" : "play.fill") {
                     if model.running { model.stop() } else { model.start() }
                 }
-                Menu {
-                    Button("儲存 TXT") { model.saveTranscript(format: .txt) }
-                    Button("儲存 Markdown") { model.saveTranscript(format: .markdown) }
-                } label: { Label("儲存", systemImage: "square.and.arrow.down") }
-                    .fixedSize()
-                    .disabled(model.captionRows.isEmpty || model.isExporting || model.isProtectingTranscript)
                 Button("清除", systemImage: "trash") { model.requestClearCaptions() }
                     .disabled(model.captionRows.isEmpty || model.isExporting || model.isProtectingTranscript)
                 Spacer(minLength: 0)
-                Button(settings.alwaysOnTop ? "取消置頂" : "保持置頂", systemImage: settings.alwaysOnTop ? "pin.fill" : "pin") {
-                    settings.alwaysOnTop.toggle()
-                }.labelStyle(.iconOnly).help(settings.alwaysOnTop ? "取消置頂" : "保持置頂")
+                Button(settings.activeAlwaysOnTop ? "取消置頂" : "保持置頂", systemImage: settings.activeAlwaysOnTop ? "pin.fill" : "pin") {
+                    settings.activeAlwaysOnTop.toggle()
+                }.labelStyle(.iconOnly).help(settings.activeAlwaysOnTop ? "取消置頂" : "保持置頂")
                 Button("顯示設定", systemImage: "textformat.size") { showsSettings.toggle() }
                     .labelStyle(.iconOnly)
                     .popover(isPresented: $showsSettings) { SettingsView(settings: settings) }
                 Menu {
+                    Section("儲存逐字稿") {
+                        Button("儲存 TXT") { model.saveTranscript(format: .txt) }
+                            .disabled(model.captionRows.isEmpty || model.isExporting || model.isProtectingTranscript)
+                        Button("儲存 Markdown") { model.saveTranscript(format: .markdown) }
+                            .disabled(model.captionRows.isEmpty || model.isExporting || model.isProtectingTranscript)
+                    }
+                    Divider()
                     Button("授予輔助使用權限") { model.requestPermission() }
                     Button("開啟權限設定") { model.openAccessibilitySettings() }
                     Divider()
@@ -48,26 +62,38 @@ struct CaptionOverlayView: View {
                     .menuStyle(.borderlessButton).fixedSize().labelStyle(.iconOnly)
             }
             .controlSize(.small)
+            .opacity(settings.isNotes && !hoveringHeader && !showsSettings ? 0 : 1)
+            .allowsHitTesting(!settings.isNotes || hoveringHeader || showsSettings)
+            .accessibilityHidden(settings.isNotes && !hoveringHeader && !showsSettings)
+            }
+            .frame(height: 26)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onHover { hoveringHeader = $0 }
             Divider()
             CaptionScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    if model.captionRows.isEmpty {
+                VStack(alignment: .leading, spacing: settings.isNotes ? 18 : 22) {
+                    if visibleRows.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("等候英文字幕").font(.title3)
-                            Text("開啟 macOS Live Captions，再按「開始擷取」。首次使用請從右上角更多操作授予權限，並準備翻譯模型。")
+                            Text(settings.isNotes ? "筆記" : "等候英文字幕").font(.title3)
+                            Text(settings.isNotes ? "完成的英中對照會顯示在這裡。移到頂部可顯示操作按鈕。" : "開啟 macOS Live Captions，再按「開始擷取」。首次使用請從右上角更多操作授予權限，並準備翻譯模型。")
                                 .font(.callout).foregroundStyle(.secondary)
                         }.padding(.vertical, 12)
                     }
-                    ForEach(model.captionRows) { row in
+                    ForEach(visibleRows) { row in
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(TranscriptService.elapsedLabel(row.elapsed))
-                                .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-                            if !settings.chineseOnly {
-                                Text(row.english).font(.system(size: settings.englishFontSize)).foregroundStyle(.secondary)
+                            if !settings.isNotes {
+                                Text(TranscriptService.elapsedLabel(row.elapsed))
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                            if settings.isNotes || !settings.chineseOnly {
+                                Text(row.english).font(.system(size: settings.activeEnglishSize, weight: .regular))
+                                    .foregroundStyle(settings.isNotes ? Color.primary : Color.secondary)
+                                    .lineSpacing(settings.isNotes ? 3 : 0)
                                     .lineLimit(nil).fixedSize(horizontal: false, vertical: true)
                             }
                             if let chinese = row.chinese {
-                                Text(chinese).font(.system(size: settings.chineseFontSize)).lineSpacing(4)
+                                Text(chinese).font(.system(size: settings.activeChineseSize, weight: .regular)).lineSpacing(settings.isNotes ? 3 : 4)
                                     .lineLimit(nil).fixedSize(horizontal: false, vertical: true)
                             } else {
                                 Text(row.complete ? "等待翻譯…" : "等待完整句子…")
@@ -80,6 +106,7 @@ struct CaptionOverlayView: View {
                 .padding(.trailing, 8)
                 .textSelection(.enabled)
             }
+            if !settings.isNotes {
             Divider()
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.connectionStatus)
@@ -94,11 +121,13 @@ struct CaptionOverlayView: View {
                     Text(model.diagnostics).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                 }.frame(height: 70)
             }
+            }
         }
         .padding(16)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(settings.isNotes ? Color(red: 0.97, green: 0.96, blue: 0.93) : Color(nsColor: .windowBackgroundColor))
         .preferredColorScheme(colorScheme)
-        .onChange(of: settings.alwaysOnTop) { applyWindowSettings() }
+        .onChange(of: settings.mode) { applyWindowSettings() }
+        .onChange(of: settings.activeAlwaysOnTop) { applyWindowSettings() }
         .onChange(of: settings.opacity) { applyWindowSettings() }
         .onChange(of: settings.appearance) { applyWindowSettings() }
         .translationTask(model.configuration) { session in

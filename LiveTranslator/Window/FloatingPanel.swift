@@ -20,9 +20,11 @@ final class FloatingPanel: NSPanel {
     }
 
     func apply(_ settings: OverlaySettings) {
-        level = settings.alwaysOnTop ? .floating : .normal
-        alphaValue = settings.opacity
-        switch settings.appearance {
+        title = settings.isNotes ? "筆記" : "LiveTranslator"
+        collectionBehavior = settings.isNotes ? [.managed] : [.canJoinAllSpaces, .fullScreenAuxiliary]
+        level = settings.activeAlwaysOnTop ? .floating : .normal
+        alphaValue = settings.activeOpacity
+        switch settings.activeAppearance {
         case .system: appearance = nil
         case .dark: appearance = NSAppearance(named: .darkAqua)
         case .light: appearance = NSAppearance(named: .aqua)

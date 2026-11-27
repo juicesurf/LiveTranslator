@@ -4,6 +4,7 @@ import SwiftUI
 struct CaptionOverlayView: View {
     @Bindable var model: CaptionViewModel
     @Bindable var settings: OverlaySettings
+    var showSummary: () -> Void
     var applyWindowSettings: () -> Void
     @State private var showsSettings = false
     @State private var showsDiagnostics = false
@@ -52,6 +53,9 @@ struct CaptionOverlayView: View {
                             .disabled(model.captionRows.isEmpty || model.isExporting || model.isProtectingTranscript)
                     }
                     Divider()
+                    Button("整理本次重點", action: showSummary)
+                        .disabled(!model.captionRows.contains(where: { $0.complete }))
+                    Divider()
                     Button("授予輔助使用權限") { model.requestPermission() }
                     Button("開啟權限設定") { model.openAccessibilitySettings() }
                     Divider()
@@ -83,7 +87,7 @@ struct CaptionOverlayView: View {
                     ForEach(visibleRows) { row in
                         VStack(alignment: .leading, spacing: 7) {
                             if !settings.isNotes {
-                                Text(TranscriptService.elapsedLabel(row.elapsed))
+                                Text("[\(TranscriptService.elapsedLabel(row.elapsed))] [\(TranscriptService.clockLabel(row.timestamp))]")
                                     .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                             }
                             if settings.isNotes || !settings.chineseOnly {
@@ -111,6 +115,9 @@ struct CaptionOverlayView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.connectionStatus)
                 Text(model.translationStatus)
+                if let changed = model.lastCaptionChangeAt {
+                    Text("英文來源最後更新 \(TranscriptService.clockLabel(changed)) · 待譯 \(model.pendingTranslationCount) 句")
+                }
                 if !model.exportStatus.isEmpty { Text(model.exportStatus) }
             }
             .font(.caption).foregroundStyle(.secondary)

@@ -26,6 +26,7 @@ final class CaptionViewModel {
     var connectionStatus = "尚未開始"
     var translationStatus = "尚未準備語言模型"
     var diagnostics = ""
+    private(set) var lastCaptionChangeAt: Date?
     var running = false
     var configuration: TranslationSession.Configuration?
     private let reader = AccessibilityCaptionReader()
@@ -140,6 +141,7 @@ final class CaptionViewModel {
         failed.removeAll()
         english = ""
         chinese = ""
+        lastCaptionChangeAt = nil
         pendingSince = nil
         exportStatus = ""
         timingStatus = "尚無翻譯耗時"
@@ -159,6 +161,7 @@ final class CaptionViewModel {
         if sessionStartedAt == nil { sessionStartedAt = Date() }
         stop()
         running = true
+        prepareTranslationIfNeeded()
         polling = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -187,12 +190,14 @@ final class CaptionViewModel {
         guard !isProtectingTranscript, text != english else { return }
         if sessionStartedAt == nil { sessionStartedAt = now }
         english = text
+        lastCaptionChangeAt = now
         units = processor.consume(text).filter { clearedSources[$0.id] != $0.text }
         for unit in units where firstSeen[unit.id] == nil { firstSeen[unit.id] = now }
         // Keep the last translation visible while the next snapshot is pending.
         revision += 1
         refreshChinese()
         if nextTranslationUnit != nil {
+            if configuration == nil { translationStatus = "翻譯尚未啟動；開始擷取會自動準備模型" }
             if pendingSince == nil { pendingSince = now }
         } else {
             pendingSince = nil
@@ -200,8 +205,20 @@ final class CaptionViewModel {
         }
     }
 
+    private var pendingTranslationUnits: [CaptionUnit] {
+        units.filter { $0.complete && translations[$0.id]?.source != $0.text && failed[$0.id] != $0.text }
+    }
+
+    var pendingTranslationCount: Int { pendingTranslationUnits.count }
+
+    func translationCandidate(prioritizeLatest: Bool) -> CaptionUnit? {
+        prioritizeLatest ? pendingTranslationUnits.last : pendingTranslationUnits.first
+    }
+
     var nextTranslationUnit: CaptionUnit? {
-        units.first { $0.complete && translations[$0.id]?.source != $0.text && failed[$0.id] != $0.text }
+        // Live reading must not wait behind an entire lecture's backlog.
+        // Stopping capture lets the remaining history finish in chronological order.
+        translationCandidate(prioritizeLatest: running)
     }
 
     func shouldTranslate(at now: Date) -> Bool {
@@ -222,6 +239,10 @@ final class CaptionViewModel {
             guard unit.complete, let translation = translations[unit.id], translation.source == unit.text else { return nil }
             return translation.result
         }.joined(separator: "\n")
+    }
+
+    func prepareTranslationIfNeeded() {
+        if configuration == nil { prepareTranslation() }
     }
 
     func prepareTranslation() {
@@ -249,7 +270,8 @@ final class CaptionViewModel {
                     let capturedGeneration = generation
                     let submittedAt = Date()
                     let wait = submittedAt.timeIntervalSince(pendingSince ?? submittedAt)
-                    translationStatus = "翻譯中（\(unit.text.count) 字元）…"
+                    let sourceTime = firstSeen[unit.id].map { TranscriptService.clockLabel($0) } ?? "未知時間"
+                    translationStatus = "翻譯 \(sourceTime) 的句子 · 待譯 \(pendingTranslationCount) 句…"
                     do {
                         let result = try await service.translate(unit.text)
                         try Task.checkCancellation()

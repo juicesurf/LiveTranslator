@@ -61,17 +61,36 @@ struct TranscriptTests {
         _ = model.acceptTranslation("貓在睡覺。", for: unit)
         model.setEnglish("The cat sleeps. Next thought", at: start.addingTimeInterval(65))
         let text = TranscriptService.plainText(rows: model.captionRows, exportedAt: start)
-        #expect(text.contains("[00:00:00] [已翻譯]\nThe cat sleeps.\n貓在睡覺。"))
-        #expect(text.contains("[00:01:05] [英文未完成]\nNext thought\n[英文未完成]"))
+        #expect(text.contains("[00:00:00] [\(TranscriptService.clockLabel(start))] [已翻譯]\nThe cat sleeps.\n貓在睡覺。"))
+        #expect(text.contains("[00:01:05] [\(TranscriptService.clockLabel(start.addingTimeInterval(65)))] [英文未完成]\nNext thought\n[英文未完成]"))
         #expect(TranscriptService.elapsedLabel(3661) == "01:01:01")
         #expect(TranscriptService.elapsedLabel(-3) == "00:00:00")
+    }
+
+    @Test func exportIncludesDatesAcrossMidnightAndExplicitTimeZone() throws {
+        let zone = try #require(TimeZone(identifier: "Pacific/Auckland"))
+        let parser = ISO8601DateFormatter()
+        let first = try #require(parser.date(from: "2026-11-27T23:59:59+13:00"))
+        let second = first.addingTimeInterval(2)
+        let rows = [
+            CaptionDisplayRow(id: 0, english: "First.", chinese: "第一句。", complete: true, timestamp: first, elapsed: 0),
+            CaptionDisplayRow(id: 1, english: "Second.", chinese: "第二句。", complete: true, timestamp: second, elapsed: 2)
+        ]
+        #expect(TranscriptService.clockLabel(first, timeZone: zone) == "23:59:59")
+        for format in TranscriptFormat.allCases {
+            let text = TranscriptService.document(rows: rows, exportedAt: second, format: format, timeZone: zone)
+            #expect(text.contains("時區：Pacific/Auckland"))
+            #expect(text.contains("2026-11-27 23:59:59"))
+            #expect(text.contains("2026-11-28 00:00:01"))
+        }
+        #expect(TranscriptService.clockLabel(first, timeZone: TimeZone(secondsFromGMT: 0)!) == "10:59:59")
     }
 
     @Test func markdownEscapesCaptionMarkupAndPreservesChinese() {
         let row = CaptionDisplayRow(id: 0, english: "Use *bold* and <tag>.", chinese: "保留中文與 [括號]。", complete: true,
                                     timestamp: Date(), elapsed: 5)
         let text = TranscriptService.document(rows: [row], exportedAt: Date(), format: .markdown)
-        #expect(text.contains("### 00:00:05 · 已翻譯"))
+        #expect(text.contains("### 00:00:05 · \(TranscriptService.clockLabel(row.timestamp)) · 已翻譯"))
         #expect(text.contains("Use \\*bold\\* and \\<tag\\>\\."))
         #expect(text.contains("保留中文與 \\[括號\\]。"))
     }

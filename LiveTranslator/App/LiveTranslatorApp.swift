@@ -23,6 +23,7 @@ struct LiveTranslatorApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let model = CaptionViewModel()
     let settings = OverlaySettings()
+    private var summaryWindow: SummaryWindowController?
     private var panel: FloatingPanel?
     private var terminationPending = false
 
@@ -32,7 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if panel == nil {
             let panel = FloatingPanel()
             panel.delegate = self
-            panel.contentView = NSHostingView(rootView: CaptionOverlayView(model: model, settings: settings) { [weak self] in
+            panel.contentView = NSHostingView(rootView: CaptionOverlayView(model: model, settings: settings, showSummary: { [weak self] in
+                self?.showSummary()
+            }) { [weak self] in
                 guard let self else { return }
                 self.panel?.apply(self.settings)
             })
@@ -41,6 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Only an explicit show action orders the panel; caption updates never do so.
         panel?.orderFrontRegardless()
+    }
+
+    func showSummary() {
+        if summaryWindow == nil { summaryWindow = SummaryWindowController(captionModel: model) }
+        summaryWindow?.present(rows: model.captionRows)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

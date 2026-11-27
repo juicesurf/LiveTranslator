@@ -76,6 +76,49 @@ struct PrototypeTests {
         #expect(model.captionRows.map(\.english) == ["Another sentence."])
     }
 
+    @Test func liveTranslationPrioritizesNewestWithoutDiscardingHistory() throws {
+        let model = CaptionViewModel()
+        model.setEnglish("The first sentence. The second sentence. The newest sentence.")
+        #expect(model.pendingTranslationCount == 3)
+        let newest = try #require(model.translationCandidate(prioritizeLatest: true))
+        #expect(newest.text == "The newest sentence.")
+        #expect(model.acceptTranslation("最新一句。", for: newest))
+        #expect(model.pendingTranslationCount == 2)
+        #expect(model.translationCandidate(prioritizeLatest: true)?.text == "The second sentence.")
+        #expect(model.translationCandidate(prioritizeLatest: false)?.text == "The first sentence.")
+        #expect(model.captionRows.count == 3)
+        model.setEnglish("The first sentence. The second sentence. The newest sentence. A more recent sentence. An incomplete tail")
+        #expect(model.translationCandidate(prioritizeLatest: true)?.text == "A more recent sentence.")
+        #expect(model.captionRows.count == 5)
+    }
+
+    @Test func captureUpdateTimeTracksEnglishChangesOnly() {
+        let model = CaptionViewModel()
+        let time = Date(timeIntervalSince1970: 1000)
+        model.setEnglish("A sentence.", at: time)
+        model.setEnglish("A sentence.", at: time.addingTimeInterval(5))
+        #expect(model.lastCaptionChangeAt == time)
+        model.setEnglish("A new sentence.", at: time.addingTimeInterval(10))
+        #expect(model.lastCaptionChangeAt == time.addingTimeInterval(10))
+    }
+
+    @Test func preparingOnStartCreatesConfigurationWithoutResettingReadySession() {
+        let model = CaptionViewModel()
+        #expect(model.configuration == nil)
+        model.prepareTranslationIfNeeded()
+        let version = model.configuration?.version
+        #expect(version != nil)
+        model.prepareTranslationIfNeeded()
+        #expect(model.configuration?.version == version)
+    }
+
+    @Test func latestCaptionBlockIsSelectedInsteadOfOldHistory() {
+        #expect(CaptionTextSelector.latest(from: ["Old sentence.", "The newest sentence."]) == "The newest sentence.")
+        #expect(CaptionTextSelector.latest(from: ["The newest sentence.", "已暫停", " "]) == "The newest sentence.")
+        #expect(CaptionTextSelector.latest(from: ["A single rolling caption."]) == "A single rolling caption.")
+        #expect(CaptionTextSelector.latest(from: ["Paused"]) == nil)
+    }
+
     @Test func stopInvalidatesInFlightRevision() {
         let model = CaptionViewModel()
         let revision = model.revision

@@ -21,12 +21,15 @@ struct CaptionDisplayRow: Identifiable, Equatable {
 
 @MainActor @Observable
 final class CaptionViewModel {
+    @ObservationIgnored weak var presentationWindow: NSWindow?
+    var searchRequest = 0
     var english = ""
     var chinese = ""
     var connectionStatus = "尚未開始"
     var translationStatus = "尚未準備語言模型"
     var diagnostics = ""
     private(set) var lastCaptionChangeAt: Date?
+    private var lastSuccessfulRead: (at: Date, text: String, details: String)?
     var running = false
     var configuration: TranslationSession.Configuration?
     private let reader = AccessibilityCaptionReader()
@@ -79,7 +82,7 @@ final class CaptionViewModel {
         panel.message = "儲存按下按鈕時的全部字幕，依時間、英文、中文逐句排列。"
         preferredExportFormat = format
         isExporting = true
-        panel.begin { [weak self] response in
+        SavePanelPresenter.present(panel, from: presentationWindow) { [weak self] response in
             guard let self else { completion?(false); return }
             isExporting = false
             guard response == .OK, let url = panel.url else { completion?(false); return }
@@ -142,6 +145,8 @@ final class CaptionViewModel {
         english = ""
         chinese = ""
         lastCaptionChangeAt = nil
+        lastSuccessfulRead = nil
+        diagnostics = ""
         pendingSince = nil
         exportStatus = ""
         timingStatus = "尚無翻譯耗時"
@@ -157,6 +162,19 @@ final class CaptionViewModel {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
+    func applyCaptionRead(_ read: CaptionRead, at now: Date = Date()) {
+        connectionStatus = read.status
+        if !read.text.isEmpty {
+            lastSuccessfulRead = (now, read.text, read.diagnostics)
+            if !isProtectingTranscript && read.text != english { setEnglish(read.text, at: now) }
+        }
+        var detail = "本次讀取 \(TranscriptService.clockLabel(now))：\(read.status)\n\(read.diagnostics)"
+        if let last = lastSuccessfulRead {
+            detail += "\n\n最後成功 \(TranscriptService.clockLabel(last.at))（僅記憶體）\n原始字幕：\n\(last.text)\nAX 屬性：\n\(last.details)"
+        }
+        diagnostics = detail
+    }
+
     func start() {
         if sessionStartedAt == nil { sessionStartedAt = Date() }
         stop()
@@ -167,11 +185,7 @@ final class CaptionViewModel {
                 guard let self else { return }
                 let result = await reader.read()
                 guard !Task.isCancelled else { return }
-                connectionStatus = result.status
-                diagnostics = result.diagnostics
-                if !isProtectingTranscript && !result.text.isEmpty && result.text != english {
-                    setEnglish(result.text)
-                }
+                applyCaptionRead(result)
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
@@ -294,5 +308,23 @@ final class CaptionViewModel {
         } catch {
             if !Task.isCancelled { translationStatus = "模型準備失敗：\(error.localizedDescription)；請重試" }
         }
+    }
+}
+
+/// Literal, case/diacritic-insensitive search over both languages, one result per sentence.
+enum CaptionSearch {
+    static func matches(_ rows: [CaptionDisplayRow], query: String) -> [CaptionDisplayRow] {
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { return [] }
+        return rows.filter {
+            $0.english.range(of: term, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil ||
+            $0.chinese?.range(of: term, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil
+        }
+    }
+
+    static func movedID(in rows: [CaptionDisplayRow], currentID: Int?, step: Int) -> Int? {
+        guard !rows.isEmpty else { return nil }
+        let index = rows.firstIndex { $0.id == currentID } ?? (step > 0 ? -1 : 0)
+        return rows[(index + step + rows.count) % rows.count].id
     }
 }

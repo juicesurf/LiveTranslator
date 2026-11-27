@@ -14,6 +14,14 @@ struct LiveTranslatorApp: App {
                     }.keyboardShortcut("n", modifiers: [.command, .shift])
                     Button("顯示字幕視窗") { delegate.showPanel() }
                         .keyboardShortcut("0", modifiers: .command)
+                    Button("顯示本次重點") { delegate.reopenSummary() }
+                        .keyboardShortcut("1", modifiers: .command)
+                }
+                CommandGroup(after: .textEditing) {
+                    Button("搜尋中英字幕") { delegate.searchCaptions() }
+                        .keyboardShortcut("f", modifiers: .command)
+                    Button("搜尋中英字幕（Ctrl+F）") { delegate.searchCaptions() }
+                        .keyboardShortcut("f", modifiers: .control)
                 }
             }
     }
@@ -33,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if panel == nil {
             let panel = FloatingPanel()
             panel.delegate = self
+            model.presentationWindow = panel
             panel.contentView = NSHostingView(rootView: CaptionOverlayView(model: model, settings: settings, showSummary: { [weak self] in
                 self?.showSummary()
             }) { [weak self] in
@@ -44,6 +53,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         // Only an explicit show action orders the panel; caption updates never do so.
         panel?.orderFrontRegardless()
+    }
+
+    func searchCaptions() {
+        showPanel()
+        panel?.makeKeyAndOrderFront(nil)
+        model.searchRequest += 1
+    }
+
+    func reopenSummary() {
+        if let summaryWindow { summaryWindow.reveal() }
+        else { showSummary() }
     }
 
     func showSummary() {

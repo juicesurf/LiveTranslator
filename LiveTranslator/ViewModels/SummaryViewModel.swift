@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 @MainActor @Observable
 final class SummaryViewModel {
+    @ObservationIgnored weak var presentationWindow: NSWindow?
     var result: SummaryResult?
     var status = "尚未開始整理"
     var errorMessage: String?
@@ -64,7 +65,7 @@ final class SummaryViewModel {
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
         panel.nameFieldStringValue = "LiveTranslator-summary-\(result.capturedAt.formatted(.iso8601.year().month().day().dateSeparator(.dash))).md"
         isExporting = true
-        panel.begin { [weak self] response in
+        SavePanelPresenter.present(panel, from: presentationWindow) { [weak self] response in
             guard let self else { return }
             isExporting = false
             guard response == .OK, let url = panel.url else { return }

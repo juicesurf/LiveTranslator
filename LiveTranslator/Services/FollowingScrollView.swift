@@ -4,6 +4,28 @@ import AppKit
 final class FollowingScrollView: NSScrollView {
     private(set) var followsLatest = true
     private var changingContent = false
+    private var searchActive = false
+    private var beforeSearch: (origin: NSPoint, follow: Bool)?
+
+    func setSearchActive(_ active: Bool) {
+        guard active != searchActive else { return }
+        if active {
+            beforeSearch = (contentView.bounds.origin, followsLatest)
+            followsLatest = false
+        }
+        searchActive = active
+    }
+
+    func restoreAfterSearchIfNeeded() {
+        guard !searchActive, let saved = beforeSearch, let documentView else { return }
+        beforeSearch = nil
+        changingContent = true
+        let maximum = max(0, documentView.frame.height - contentView.bounds.height)
+        contentView.scroll(to: NSPoint(x: saved.origin.x, y: saved.follow ? maximum : min(saved.origin.y, maximum)))
+        reflectScrolledClipView(contentView)
+        followsLatest = saved.follow
+        changingContent = false
+    }
     var layoutDocument: (() -> Void)?
     private var previousSize = NSSize.zero
     private var boundsObserver: NSObjectProtocol?
@@ -17,7 +39,7 @@ final class FollowingScrollView: NSScrollView {
             forName: NSView.boundsDidChangeNotification, object: contentView, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, !self.changingContent else { return }
+                guard let self, !self.changingContent, !self.searchActive else { return }
                 self.followsLatest = self.isAtBottom
             }
         }
@@ -41,11 +63,11 @@ final class FollowingScrollView: NSScrollView {
         // Stop following before AppKit processes a wheel/trackpad event.
         followsLatest = false
         super.scrollWheel(with: event)
-        followsLatest = isAtBottom
+        followsLatest = !searchActive && isAtBottom
     }
 
     func updateDocument(_ update: () -> Void) {
-        let follow = followsLatest
+        let follow = followsLatest && !searchActive
         let origin = contentView.bounds.origin
         changingContent = true
         update()

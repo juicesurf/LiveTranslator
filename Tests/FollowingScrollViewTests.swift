@@ -25,6 +25,25 @@ struct FollowingScrollViewTests {
         }
     }
 
+    @Test func searchTemporarilyFiltersContentAndRestoresReadingPosition() {
+        let scroll = FollowingScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        let document = Document(frame: NSRect(x: 0, y: 0, width: 480, height: 1500))
+        scroll.documentView = document
+        scroll.layoutSubtreeIfNeeded()
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 250))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        scroll.setSearchActive(true)
+        scroll.updateDocument { document.frame.size.height = 200 }
+        #expect(!scroll.followsLatest)
+        scroll.updateDocument { document.frame.size.height = 400 }
+        #expect(!scroll.followsLatest)
+        scroll.setSearchActive(false)
+        scroll.updateDocument { document.frame.size.height = 2000 }
+        scroll.restoreAfterSearchIfNeeded()
+        #expect(scroll.contentView.bounds.origin.y == 250)
+        #expect(!scroll.followsLatest)
+    }
+
     @Test func returningToBottomRestoresFollowing() {
         let scroll = FollowingScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
         let document = Document(frame: NSRect(x: 0, y: 0, width: 480, height: 1500))

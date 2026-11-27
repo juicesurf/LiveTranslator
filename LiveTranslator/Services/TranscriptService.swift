@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 enum TranscriptFormat: String, CaseIterable {
     case txt, markdown
@@ -66,5 +67,20 @@ struct TranscriptService {
     static func escape(_ text: String) -> String {
         let reserved = Set("\\`*_{}[]<>#+-.!|")
         return text.map { reserved.contains($0) ? "\\\($0)" : String($0) }.joined()
+    }
+}
+
+@MainActor
+enum SavePanelPresenter {
+    static func present(_ panel: NSSavePanel, from window: NSWindow?, completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        // Save is an explicit user action. A modal-level sheet must sit above floating captions.
+        panel.level = .modalPanel
+        NSApp.activate()
+        if let window, window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
+        }
     }
 }

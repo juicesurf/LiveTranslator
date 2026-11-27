@@ -102,6 +102,14 @@ struct CaptionProcessorTests {
         #expect(result.map(\.text) == ["Thank you.", "We are all here.", "Thank you."])
         #expect(Set(result.map(\.id)).count == 3)
     }
+    @Test func periodAfterSummerOnesSplitsTheTwoSentences() {
+        var processor = CaptionProcessor()
+        let result = processor.consume("That's such a good point about light because I've definitely noticed winter mornings feel almost impossible compared to summer ones. I think a lot of people don't realise how much artificial light at night can mess with this rhythm too.")
+        #expect(result.count == 2)
+        #expect(result[0].text.hasSuffix("summer ones."))
+        #expect(result[1].text.hasPrefix("I think"))
+    }
+
     @Test func unrelatedSnapshotAppendsNewOccurrence() {
         var processor = CaptionProcessor()
         _ = processor.consume("Old sentence.")

@@ -3,7 +3,11 @@ import SwiftUI
 
 struct CaptionScrollView<Content: View>: NSViewRepresentable {
     let content: Content
-    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var searching = false
+    init(searching: Bool = false, @ViewBuilder content: () -> Content) {
+        self.searching = searching
+        self.content = content()
+    }
 
     func makeNSView(context: Context) -> FollowingScrollView {
         let scroll = FollowingScrollView(frame: .zero)
@@ -18,9 +22,11 @@ struct CaptionScrollView<Content: View>: NSViewRepresentable {
             guard let scroll, let host else { return }
             host.fit(AnyView(content), width: scroll.contentSize.width, minimumHeight: scroll.contentSize.height)
         }
+        scroll.setSearchActive(searching)
         scroll.updateDocument {
             scroll.layoutDocument?()
         }
+        scroll.restoreAfterSearchIfNeeded()
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: FollowingScrollView, context: Context) -> CGSize? {
